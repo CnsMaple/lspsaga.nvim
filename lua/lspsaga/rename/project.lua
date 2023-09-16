@@ -15,7 +15,9 @@ local function safe_close(handle)
 end
 
 local function get_root_dir()
-  local clients = lsp.get_active_clients({ bufnr = 0 })
+  ---@diagnostic disable-next-line: deprecated
+  local get_clients = vim.version().minor >= 10 and lsp.get_clients or lsp.get_active_clients
+  local clients = get_clients({ bufnr = 0 })
   for _, client in ipairs(clients) do
     if client.config.root_dir then
       return client.config.root_dir
@@ -81,7 +83,8 @@ local function apply_map(bufnr, winid, data, new_name)
       api.nvim_buf_add_highlight(bufnr, ns, 'SagaSelect', curlnum - 1, 0, -1)
       return
     end
-    item.selectd = false
+    item.selected = false
+    api.nvim_buf_clear_namespace(bufnr, ns, curlnum - 1, curlnum)
     api.nvim_buf_add_highlight(bufnr, ns, 'Comment', curlnum - 1, 0, -1)
   end)
 
@@ -117,14 +120,13 @@ local function apply_map(bufnr, winid, data, new_name)
   end)
 end
 
-local function render(chunks, root_dir, new_name)
-  local result = decode(chunks, root_dir)
-  local lines = {}
+local function render(chunks, new_name)
+  local result = decode(chunks)
   local bufnr, winid = create_win()
   local line = 1
 
   for fname, item in pairs(result) do
-    fname = fname:sub(#vim.env.HOME + 2)
+    fname = util.path_sub(fname, get_root_dir())
     api.nvim_buf_set_lines(bufnr, line - 1, line - 1, false, { fname })
     api.nvim_buf_add_highlight(bufnr, ns, 'SagaFinderFname', line - 1, 0, -1)
     line = line + 1
@@ -137,17 +139,18 @@ local function render(chunks, root_dir, new_name)
       line = line + 1
     end, item)
   end
+  api.nvim_win_set_cursor(winid, { 2, 10 })
   apply_map(bufnr, winid, result, new_name)
 end
 
 function M:new(args)
   if fn.executable('rg') == 0 then
-    vim.notify('[Lspsaga] does not find rg')
+    vim.notify('[lspsaga] failed finding rg')
     return
   end
 
   if #args < 2 then
-    vim.notify('[Lspsaga] missing search pattern or new name')
+    vim.notify('[lspsaga] missing search pattern or new name')
     return
   end
 
@@ -159,7 +162,7 @@ function M:new(args)
   local chunks = {}
   local root_dir = get_root_dir()
   if not root_dir then
-    vim.notify('[Lspsaga] buffer run in single file mode')
+    vim.notify('[lspsaga] buffer run in single file mode')
     return
   end
 
@@ -174,7 +177,7 @@ function M:new(args)
     safe_close(stderr)
     -- parse after close
     vim.schedule(function()
-      render(table.concat(chunks), root_dir, args[2])
+      render(table.concat(chunks), args[2])
     end)
   end)
 

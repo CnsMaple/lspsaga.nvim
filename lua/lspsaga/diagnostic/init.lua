@@ -52,7 +52,7 @@ function diag:get_diagnostic(opt)
   if opt.cursor then
     local res = {}
     for _, v in pairs(entrys) do
-      if v.col <= col and v.end_col > col then
+      if v.col <= col and (v.end_col and v.end_col > col or true) then
         res[#res + 1] = v
       end
     end
@@ -83,7 +83,7 @@ function diag:code_action_cb(action_tuples, enriched_ctx)
 
   for index, client_with_actions in pairs(action_tuples) do
     if #client_with_actions ~= 2 then
-      vim.notify('There is something wrong in aciton_tuples')
+      vim.notify('[lspsaga] failed indexing client actions')
       return
     end
     if client_with_actions[2].title then
@@ -246,7 +246,8 @@ function diag:render_diagnostic_window(entry, option)
   local content = vim.split(entry.message, '\n', { trimempty = true })
 
   if diag_conf.extend_relatedInformation then
-    if entry.user_data.lsp.relatedInformation and #entry.user_data.lsp.relatedInformation > 0 then
+    local relatedInformation = vim.tbl_get(entry, 'user_data', 'lsp', 'relatedInformation')
+    if relatedInformation and #relatedInformation > 0 then
       vim.tbl_map(function(item)
         if item.location and item.location.range then
           local fname
@@ -264,15 +265,18 @@ function diag:render_diagnostic_window(entry, option)
     end
   end
 
-  if diag_conf.show_code_action then
+  if diag_conf.show_code_action and #util.get_client_by_method('textDocument/codeAction') > 0 then
     act:send_request(self.main_buf, {
       context = { diagnostics = self:get_cursor_diagnostic() },
       range = {
-        start = { entry.lnum + 1, entry.col },
-        ['end'] = { entry.lnum + 1, entry.col },
+        start = { entry.lnum + 1, (entry.col or 1) },
+        ['end'] = { entry.lnum + 1, (entry.col or 1) },
       },
       gitsign = false,
     }, function(action_tuples, enriched_ctx)
+      if #action_tuples == 0 then
+        return
+      end
       self:code_action_cb(action_tuples, enriched_ctx)
     end)
   end
@@ -314,6 +318,7 @@ function diag:render_diagnostic_window(entry, option)
       ['buftype'] = 'nofile',
     })
     :winopt({
+      ['wrap'] = true,
       ['conceallevel'] = 2,
       ['concealcursor'] = 'niv',
       ['showbreak'] = 'NONE',
@@ -373,17 +378,13 @@ function diag:render_diagnostic_window(entry, option)
 
   local close_autocmds = { 'CursorMoved', 'InsertEnter' }
   vim.defer_fn(function()
-    api.nvim_create_autocmd(close_autocmds, {
+    self.auid = api.nvim_create_autocmd(close_autocmds, {
       buffer = self.main_buf,
       once = true,
       callback = function(args)
         preview_win_close()
-        if self.before_winid then
-          api.nvim_win_close(self.before_winid, true)
-          self.before_winid = nil
-        elseif self.winid then
-          self:clean_data()
-        end
+        util.close_win(self.winid)
+        self:clean_data()
         api.nvim_del_autocmd(args.id)
       end,
     })
@@ -392,8 +393,10 @@ end
 
 function diag:move_cursor(entry)
   local current_winid = api.nvim_get_current_win()
-  if self.winid then
-    self.before_winid = self.winid
+  if self.winid and api.nvim_win_is_valid(self.winid) then
+    api.nvim_win_close(self.winid, true)
+    preview_win_close()
+    pcall(api.nvim_del_autocmd, self.auid)
   end
 
   api.nvim_win_call(current_winid, function()
@@ -407,8 +410,8 @@ function diag:move_cursor(entry)
       end
     end
 
-    api.nvim_win_set_cursor(current_winid, { entry.lnum + 1, entry.col })
-    local width = entry.end_col - entry.col
+    api.nvim_win_set_cursor(current_winid, { entry.lnum + 1, (entry.col or 1) })
+    local width = entry.end_col - (entry.col or 1)
     if width <= 0 then
       width = #api.nvim_get_current_line()
     end

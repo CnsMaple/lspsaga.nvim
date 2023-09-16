@@ -1,5 +1,6 @@
 local api = vim.api
 local win = require('lspsaga.window')
+local config = require('lspsaga').config
 local term = {}
 
 local ctx = {}
@@ -18,11 +19,12 @@ function term:open_float_terminal(args)
     return
   end
 
-  local cmd = (#args == 1 and args[1]) and args[1]
+  local cmd = (#args > 0 and args[1]) and args[1]
     or (require('lspsaga.util').iswin and 'cmd.exe' or os.getenv('SHELL'))
+  local dir = (#args > 1 and args[2]) and args[2] or vim.fn.getcwd()
   -- calculate our floating window size
-  local win_height = math.ceil(vim.o.lines * 0.7)
-  local win_width = math.ceil(vim.o.columns * 0.7)
+  local win_height = math.ceil(vim.o.lines * config.floaterm.height)
+  local win_width = math.ceil(vim.o.columns * config.floaterm.width)
 
   -- and its starting position
   local row = math.ceil((vim.o.lines - win_height) * 0.4)
@@ -54,7 +56,7 @@ function term:open_float_terminal(args)
     :wininfo()
 
   if spawn_new then
-    vim.fn.termopen(cmd, {
+    local termopen_opts = {
       on_exit = function()
         if ctx.term_winid and api.nvim_win_is_valid(ctx.term_winid) then
           api.nvim_win_close(ctx.term_winid, true)
@@ -64,7 +66,11 @@ function term:open_float_terminal(args)
         end
         ctx = {}
       end,
-    })
+    }
+    if dir then
+      termopen_opts.cwd = dir
+    end
+    vim.fn.termopen(cmd, termopen_opts)
   end
 
   vim.cmd('startinsert!')

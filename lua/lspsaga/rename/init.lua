@@ -77,9 +77,10 @@ local feedkeys = function(keys, mode)
   api.nvim_feedkeys(api.nvim_replace_termcodes(keys, true, true, true), mode, true)
 end
 
-local function parse_arugment(args)
+local function parse_argument(args)
   local mode, project
-  for _, arg in ipairs(args) do
+
+  for _, arg in ipairs(args or {}) do
     if arg:find('mode=') then
       mode = vim.split(arg, '=', { trimempty = true })
     elseif arg:find('%+%+project') then
@@ -92,7 +93,7 @@ end
 function rename:lsp_rename(args)
   local cword = fn.expand('<cword>')
   self.pos = api.nvim_win_get_cursor(0)
-  local mode, project = parse_arugment(args)
+  local mode, project = parse_argument(args)
 
   local float_opt = {
     height = 1,
@@ -160,11 +161,7 @@ end
 local function rename_handler(project, curname, new_name)
   ---@diagnostic disable-next-line: duplicate-set-field
   lsp.handlers['textDocument/rename'] = function(err, result, ctx)
-    if err then
-      vim.notify(
-        '[Lspsaga] rename failed err in callback' .. table.concat(err),
-        vim.log.levels.ERROR
-      )
+    if err or not result then
       return
     end
     local client = lsp.get_client_by_id(ctx.client_id)
@@ -172,7 +169,7 @@ local function rename_handler(project, curname, new_name)
       return
     end
     local buffers = {}
-    if result.changes then
+    if result.changes and vim.tbl_count(result.changes) > 0 then
       for uri, edits in pairs(result.changes or {}) do
         local bufnr = vim.uri_to_bufnr(uri)
         lsp.util.apply_text_edits(edits, bufnr, client.offset_encoding)

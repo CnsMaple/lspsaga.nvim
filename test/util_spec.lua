@@ -61,4 +61,17 @@ describe('lspsaga util', function()
     } } }
     assert.is_false(util.res_isempty(client_results))
   end)
+
+  it('util.path_sub', function()
+    local root = '/Users/test/.config/nvim/lua/'
+    local res = util.path_sub('/Users/test/.config/nvim/lua/plugins/test.lua', root)
+    assert.is_equal('plugins/test.lua', res)
+    --@see #1183
+    root = '/Users/test/workspace/vue-project'
+    res = util.path_sub('/Users/test/workspace/vue-project/src/main.vue', root)
+    assert.is_equal('src/main.vue', res)
+    root = '/Users/test/(test-dir)/%proj-rs/'
+    res = util.path_sub('/Users/test/(test-dir)/%proj-rs/src/main.rs', root)
+    assert.is_equal('src/main.rs', res)
+  end)
 end)

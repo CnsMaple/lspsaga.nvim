@@ -24,8 +24,16 @@ function M.path_itera(buf)
 end
 
 function M.path_sub(fname, root)
-  root = (root and fname:sub(1, #root) == root) and root or vim.env.HOME
-  return fname:gsub(root .. M.path_sep, '')
+  local pwd = uv.cwd()
+  if root and fname:sub(1, #root) == root then
+    root = root
+  elseif fname:sub(1, #pwd) == pwd then
+    root = pwd
+  else
+    root = vim.env.HOME
+  end
+  root = root:sub(#root - #M.path_sep + 1) == M.path_sep and root or root .. M.path_sep
+  return fname:gsub(vim.pesc(root), '')
 end
 
 --get icon hlgroup color
@@ -47,18 +55,18 @@ function M.tbl_index(tbl, val)
 end
 
 -- get client by methods
-function M.get_client_by_method(methods)
+function M.get_client_by_method(method)
+  if vim.version().minor >= 10 then
+    return lsp.get_clients({ bufnr = 0, method = method })
+  end
+
+  ---@diagnostic disable-next-line: deprecated
   local clients = lsp.get_active_clients({ bufnr = 0 })
-  clients = vim.tbl_filter(function(client)
-    return client.name ~= 'null-ls'
-  end, clients)
   local supports = {}
 
   for _, client in ipairs(clients or {}) do
-    for _, method in ipairs(M.as_table(methods)) do
-      if client.supports_method(method) then
-        supports[#supports + 1] = client
-      end
+    if client.supports_method(method) then
+      supports[#supports + 1] = client
     end
   end
   return supports
@@ -191,6 +199,10 @@ function M.res_isempty(results)
     end
   end
   return true
+end
+
+function M.nvim_ten()
+  return vim.version().minor >= 10
 end
 
 return M

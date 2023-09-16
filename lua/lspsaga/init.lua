@@ -45,6 +45,8 @@ local default_config = {
     num_shortcut = true,
     show_server_name = false,
     extend_gitsigns = false,
+    only_in_cursor = true,
+    max_height = 0.3,
     keys = {
       quit = 'q',
       exec = '<CR>',
@@ -56,6 +58,7 @@ local default_config = {
     debounce = 10,
     sign_priority = 40,
     virtual_text = true,
+    enable_in_insert = true,
   },
   scroll_preview = {
     scroll_down = '<C-f>',
@@ -65,11 +68,15 @@ local default_config = {
   finder = {
     max_height = 0.5,
     left_width = 0.3,
+    right_width = 0.5,
     methods = {},
     default = 'ref+imp',
     layout = 'float',
     silent = false,
     filter = {},
+    sp_inexist = false,
+    sp_global = false,
+    ly_botright = false,
     keys = {
       shuttle = '[w',
       toggle_or_open = 'o',
@@ -89,6 +96,7 @@ local default_config = {
       vsplit = '<C-c>v',
       split = '<C-c>i',
       tabe = '<C-c>t',
+      tabnew = '<C-c>n',
       quit = 'q',
       close = '<C-c>k',
     },
@@ -108,6 +116,7 @@ local default_config = {
     enable = true,
     separator = ' › ',
     hide_keyword = false,
+    ignore_patterns = nil,
     show_file = true,
     folder_level = 1,
     color_mode = true,
@@ -131,6 +140,7 @@ local default_config = {
   },
   callhierarchy = {
     layout = 'float',
+    left_width = 0.2,
     keys = {
       edit = 'e',
       vsplit = 's',
@@ -145,12 +155,17 @@ local default_config = {
   implement = {
     enable = false,
     sign = true,
+    lang = {},
     virtual_text = true,
     priority = 100,
   },
   beacon = {
     enable = true,
     frequency = 7,
+  },
+  floaterm = {
+    height = 0.7,
+    width = 0.7,
   },
 }
 
@@ -163,7 +178,16 @@ function saga.setup(opts)
     require('lspsaga.codeaction.lightbulb').lb_autocmd()
   end
 
-  require('lspsaga.symbol'):register_module()
+  if vim.version().minor >= 10 and vim.fn.exists('##LspNotify') ~= 0 then
+    require('lspsaga.symbol.head'):register_module()
+  else
+    if vim.version().minor >= 10 then
+      print(
+        "[lspsaga.nvim] you're running outdated nightly version, you'll need LspNotify autocmd event to enable improved symbol"
+      )
+    end
+    require('lspsaga.symbol'):register_module()
+  end
 
   if saga.config.diagnostic.diagnostic_only_current then
     require('lspsaga.diagnostic.virt').diag_on_current()

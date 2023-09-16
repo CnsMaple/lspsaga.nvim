@@ -2,7 +2,6 @@ local api, fn = vim.api, vim.fn
 ---@diagnostic disable-next-line: deprecated
 local uv = vim.version().minor >= 10 and vim.uv or vim.loop
 local config = require('lspsaga').config.implement
-local symbol = require('lspsaga.symbol')
 local ui = require('lspsaga').config.ui
 local ns = api.nvim_create_namespace('SagaImp')
 local defined = false
@@ -109,26 +108,6 @@ local function range_compare(r1, r2)
   end
 end
 
-local function is_rename(data, range, word)
-  for before, item in pairs(data) do
-    if
-      item.range.start.line == range.start.line
-      and item.range.start.character == range.start.character
-      and word ~= before
-    then
-      return before
-    end
-  end
-end
-
-local function clean(buf)
-  for k, data in pairs(buffers_cache[buf] or {}) do
-    pcall(api.nvim_buf_del_extmark, buf, ns, data.virt_id)
-    pcall(fn.sign_unplace, name, { buffer = buf, id = data.sign_id })
-    buffers_cache[buf][k] = nil
-  end
-end
-
 local function clean_data(t, bufnr)
   for _, word in ipairs(t) do
     local data = buffers_cache[bufnr][word]
@@ -157,7 +136,11 @@ local function render(client_id, bufnr, symbols)
         local scol = range.start.character
         local erow = range['end'].line
         local ecol = range['end'].character
-        local word = api.nvim_buf_get_text(bufnr, srow, scol, erow, ecol, {})[1]
+        local ok, res = pcall(api.nvim_buf_get_text, bufnr, srow, scol, erow, ecol, {})
+        if not ok then
+          return
+        end
+        local word = res[1]
         if not buffers_cache[bufnr][word] then
           buffers_cache[bufnr][word] = {
             range = item.range,
@@ -196,39 +179,33 @@ local function render(client_id, bufnr, symbols)
   end
 end
 
-local function start(buf, client_id, symbols)
-  if symbols then
-    render(client_id, buf, symbols)
-  end
+local function lang_list()
+  local t = { 'java', 'cs', 'typescript', 'go', 'swift', 'cpp' }
+  return vim.list_extend(t, config.lang)
+end
 
+local function start()
   api.nvim_create_autocmd('User', {
     pattern = 'SagaSymbolUpdate',
     callback = function(args)
+      if
+        api.nvim_get_current_buf() ~= args.data.bufnr
+        or not vim.tbl_contains(lang_list(), vim.bo[args.data.bufnr].filetype)
+      then
+        return
+      end
+
       if api.nvim_get_mode().mode ~= 'n' or api.nvim_get_current_buf() ~= args.data.bufnr then
         return
       end
 
       if #args.data.symbols > 0 then
-        render(client_id, buf, args.data.symbols)
-      else
-        clean_data(vim.tbl_keys(buffers_cache[args.buf]), args.buf)
+        render(args.data.client_id, args.data.bufnr, args.data.symbols)
+      elseif buffers_cache[args.data.bufnr] then
+        clean_data(vim.tbl_keys(buffers_cache[args.data.bufnr]), args.data.bufnr)
       end
     end,
     desc = '[Lspsaga] Implement show',
-  })
-
-  api.nvim_create_autocmd('InsertLeave', {
-    buffer = buf,
-    callback = function(args)
-      local res = symbol:get_buf_symbols(args.buf)
-      if res then
-        if #res.symbols > 0 then
-          render(client_id, buf, res.symbols)
-        else
-          clean_data(vim.tbl_keys(buffers_cache[args.buf]), args.buf)
-        end
-      end
-    end,
   })
 end
 

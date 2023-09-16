@@ -19,7 +19,7 @@ function M.left(height, width, bufnr, title)
   end
 
   local topline = fn.line('w0')
-  local room = fn.line('w$') - pos[1]
+  local room = api.nvim_win_get_height(0) - fn.winline()
   if room <= height + 4 then
     fn.winrestview({ topline = topline + (height + 4 - room) })
   end
@@ -46,7 +46,8 @@ local function border_map()
   }
 end
 
-function M.right(left_winid, title)
+function M.right(left_winid, opt)
+  opt = opt or {}
   local win_conf = api.nvim_win_get_config(left_winid)
   local original = vim.deepcopy(win_conf)
   if original.border then
@@ -57,11 +58,14 @@ function M.right(left_winid, title)
   end
 
   local WIDTH = api.nvim_win_get_width(win_conf.win)
-  local col = win_conf.col[false] + win_conf.width
+  local col = win_conf.col[false] + win_conf.width + 2
   local row = win_conf.row[false]
-  win_conf.width = WIDTH - win_conf.width - 15
+  if opt.width then
+    win_conf.width = math.floor(WIDTH * opt.width)
+  end
+
   win_conf.row = row
-  win_conf.col = col + 2
+  win_conf.col = col
   win_conf.title = nil
   win_conf.title_pos = nil
   if win_conf.border then
@@ -69,8 +73,8 @@ function M.right(left_winid, title)
     win_conf.border[7] = ''
   end
 
-  if title then
-    win_conf.title = title
+  if opt.title then
+    win_conf.title = opt.title
     win_conf.title_pos = 'center'
   end
   return win

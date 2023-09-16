@@ -175,6 +175,10 @@ end
 
 local function file_bar(buf)
   local winid = api.nvim_get_current_win()
+  local winconf = api.nvim_win_get_config(winid)
+  if #winconf.relative ~= 0 then
+    return
+  end
   if config.show_file then
     api.nvim_set_option_value('winbar', path_in_bar(buf), { scope = 'local', win = winid })
   else
@@ -186,7 +190,20 @@ local function file_bar(buf)
   end
 end
 
+local function ignored(bufname)
+  for _, pattern in ipairs(util.as_table(config.ignore_patterns)) do
+    if bufname:find(pattern) then
+      return true
+    end
+  end
+  return false
+end
+
 local function init_winbar(buf)
+  if vim.o.diff or config.ignore_patterns and ignored(api.nvim_buf_get_name(buf)) then
+    return
+  end
+  file_bar(buf)
   api.nvim_create_autocmd('User', {
     pattern = 'SagaSymbolUpdate',
     callback = function(opt)
@@ -205,11 +222,13 @@ local function init_winbar(buf)
   })
 
   api.nvim_create_autocmd({ 'CursorMoved' }, {
+    group = api.nvim_create_augroup('SagaWinbar' .. buf, { clear = true }),
     buffer = buf,
-    callback = function()
-      local res = symbol:get_buf_symbols(buf)
+    callback = function(args)
+      local res = not util.nvim_ten() and symbol:get_buf_symbols(args.buf)
+        or require('lspsaga.symbol.head'):get_buf_symbols(args.buf)
       if res and res.symbols then
-        render_symbol_winbar(buf, res.symbols)
+        render_symbol_winbar(args.buf, res.symbols)
       end
     end,
     desc = 'Lspsaga symbols render and request',
@@ -218,14 +237,30 @@ end
 
 local function get_bar()
   local curbuf = api.nvim_get_current_buf()
-  local res = symbol:get_buf_symbols(curbuf)
+  local res = not util.nvim_ten() and symbol:get_buf_symbols(curbuf)
+    or require('lspsaga.symbol.head'):get_buf_symbols(curbuf)
   if res and res.symbols then
     return render_symbol_winbar(curbuf, res.symbols)
   end
 end
 
+local function toggle()
+  local curbuf = api.nvim_get_current_buf()
+  local ok, g = pcall(api.nvim_get_autocmds, {
+    group = 'SagaWinbar' .. curbuf,
+    event = { 'CursorMoved' },
+    buffer = curbuf,
+  })
+  if ok then
+    vim.opt_local.winbar = ''
+    api.nvim_del_augroup_by_id(g[1].group)
+    return
+  end
+  init_winbar(curbuf)
+end
+
 return {
   init_winbar = init_winbar,
-  file_bar = file_bar,
   get_bar = get_bar,
+  toggle = toggle,
 }

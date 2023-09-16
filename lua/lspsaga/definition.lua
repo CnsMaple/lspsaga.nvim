@@ -1,6 +1,5 @@
 local config = require('lspsaga').config
 local lsp, fn, api = vim.lsp, vim.fn, vim.api
-local log = require('lspsaga.logger')
 local util = require('lspsaga.util')
 local win = require('lspsaga.window')
 local buf_del_keymap = api.nvim_buf_del_keymap
@@ -71,19 +70,31 @@ function def:apply_maps(bufnr)
         local index = get_node_idx(self.list, api.nvim_get_current_win())
         local start = self.list[index].selectionRange.start
         local client = lsp.get_client_by_id(self.list[index].client_id)
-        local pos = {
-          start.line + 1,
-        }
+        if not client then
+          return
+        end
         if action == 'quit' then
           vim.cmd[action]()
           return
         end
         self:close_all()
-        vim.cmd[action](fname)
         local curbuf = api.nvim_get_current_buf()
-        pos[2] = lsp.util._get_line_byte_from_position(curbuf, start, client.offset_encoding)
-        api.nvim_win_set_cursor(0, pos)
-        beacon({ pos[1] - 1, 0 }, #api.nvim_get_current_line())
+        if action ~= 'edit' or curbuf ~= bufnr then
+          vim.cmd[action](fname)
+        end
+        local ok = lsp.util.jump_to_location({
+          uri = vim.uri_from_fname(fname),
+          range = {
+            start = start,
+            ['end'] = start,
+          },
+        }, client.offset_encoding)
+        if not ok then
+          api.nvim_err_writeln('[Lspsaga] jump failed on definition')
+          return
+        end
+        local width = #api.nvim_get_current_line()
+        beacon({ start.line, vim.fn.col('.') }, width)
       end)
     else
       util.map_keys(bufnr, map, function()
@@ -95,7 +106,9 @@ end
 
 function def:delete_maps(bufnr)
   for _, map in pairs(config.definition.keys) do
-    buf_del_keymap(bufnr, 'n', map)
+    for _, key in ipairs(util.as_table(map)) do
+      pcall(buf_del_keymap, bufnr, 'n', key)
+    end
   end
 end
 
@@ -159,14 +172,14 @@ function def:clean_event()
         api.nvim_del_autocmd(args.id)
       end
     end,
-    desc = '[Lspsaga] peek definition clean data event',
+    desc = '[lspsaga] peek definition clean data event',
   })
 end
 
 function def:peek_definition(method)
   if self.pending_reqeust then
     vim.notify(
-      '[Lspsaga] There is already a peek_definition request, please wait for the response.',
+      '[lspsaga] a peek_definition request has already been sent, please wait.',
       vim.log.levels.WARN
     )
     return
@@ -191,14 +204,25 @@ function def:peek_definition(method)
   self.opt_restore = win:minimal_restore()
 
   self.pending_request = true
+  local count = #util.get_client_by_method(method_name)
+
+  --set jumplist
+  vim.cmd("normal! m'")
+
   lsp.buf_request(current_buf, method_name, params, function(_, result, context)
+    count = count - 1
     self.pending_request = false
     if not result or next(result) == nil then
-      vim.notify(
-        '[Lspsaga] response of request method ' .. method_name .. ' is empty',
-        vim.log.levels.WARN
-      )
+      if #self.list == 0 and count == 0 then
+        vim.notify(
+          '[lspsaga] response of request method ' .. method_name .. ' is empty',
+          vim.log.levels.WARN
+        )
+      end
       return
+    end
+    if result.uri then
+      result = { result }
     end
 
     local node = {
@@ -213,17 +237,25 @@ function def:peek_definition(method)
     end
     local root_dir = lsp.get_client_by_id(context.client_id).config.root_dir
     _, node.winid = self:create_win(node.bufnr, root_dir)
-    api.nvim_win_set_cursor(
-      node.winid,
-      { node.selectionRange.start.line + 1, node.selectionRange.start.character }
-    )
+    local client = lsp.get_client_by_id(context.client_id)
+    if not client then
+      return
+    end
+    api.nvim_win_set_cursor(node.winid, {
+      node.selectionRange.start.line + 1,
+      lsp.util._get_line_byte_from_position(
+        node.bufnr,
+        node.selectionRange.start,
+        client.offset_encoding
+      ),
+    })
     self:apply_maps(node.bufnr)
     self.list[#self.list + 1] = node
   end)
 end
 
 -- override the default the defintion handler
-function def:goto_definition(method)
+function def:goto_definition(method, args)
   lsp.handlers[get_method(method)] = function(_, result, lsp_ctx, _)
     if not result or vim.tbl_isempty(result) then
       return
@@ -243,24 +275,26 @@ function def:goto_definition(method)
       return
     end
 
-    local jump_destination = vim.uri_to_fname(res.uri)
-    local current_buffer = api.nvim_buf_get_name(0)
+    --set jumplist
+    vim.cmd("normal! m'")
 
-    -- if the current buffer is the jump destination and it has been modified
-    -- then write the changes first.
-    -- this is needed because if the definition is in the current buffer the
-    -- jump may not go to the right place.
-    if vim.bo.modified and current_buffer == jump_destination then
-      vim.cmd('write!')
+    local target_bufnr = vim.uri_to_bufnr(res.uri)
+    if not api.nvim_buf_is_loaded(target_bufnr) then
+      vim.fn.bufload(target_bufnr)
     end
-
-    api.nvim_command('edit ' .. jump_destination)
-    api.nvim_win_set_cursor(0, { res.range.start.line + 1, res.range.start.character })
-    local curbuf = api.nvim_get_current_buf()
+    if args and #args > 0 then
+      vim.cmd[args[1]]()
+    end
+    api.nvim_win_set_buf(0, target_bufnr)
+    vim.lsp.util.jump_to_location({
+      uri = res.uri,
+      range = {
+        start = res.range.start,
+        ['end'] = res.range.start,
+      },
+    }, client.offset_encoding)
     local width = #api.nvim_get_current_line()
-    local col =
-      lsp.util._get_line_byte_from_position(curbuf, res.range.start, client.offset_encoding)
-    beacon({ res.range.start.line, col }, width)
+    beacon({ res.range.start.line, vim.fn.col('.') }, width)
   end
   if method == 1 then
     lsp.buf.definition()

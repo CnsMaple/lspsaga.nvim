@@ -8,7 +8,6 @@ local function hi_define()
     SagaBorder = { link = 'FloatBorder' },
     SagaNormal = { link = 'NormalFloat' },
     SagaToggle = { link = 'Comment' },
-    SagaCount = { link = 'Comment' },
     SagaBeacon = { bg = '#c43963' },
     SagaVirtLine = { fg = '#444a4d' },
     SagaSpinnerTitle = { link = 'Statement' },
@@ -18,6 +17,8 @@ local function hi_define()
     SagaSearch = { link = 'Search' },
     SagaFinderFname = { link = 'Function' },
     SagaDetail = { link = 'Comment' },
+    SagaInCurrent = { link = 'KeyWord' },
+    SagaCount = { bg = 'gray', fg = 'white', bold = true },
 
     -- code action
     ActionFix = { link = 'Keyword' },

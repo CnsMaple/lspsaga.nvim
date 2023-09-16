@@ -77,6 +77,8 @@ function sd:layout_normal()
       ['modifiable'] = false,
       ['filetype'] = 'sagadiagnostc',
       ['expandtab'] = false,
+      ['bufhidden'] = 'wipe',
+      ['buftype'] = 'nofile',
     })
     :winopt({
       ['number'] = false,
@@ -88,6 +90,8 @@ function sd:layout_normal()
 end
 
 function sd:layout_float(opt)
+  --ensure close float win
+  util.close_win(self.winid)
   local curbuf = api.nvim_get_current_buf()
   local content = api.nvim_buf_get_lines(self.bufnr, 0, -1, false)
   local increase = util.win_height_increase(content)
@@ -174,6 +178,7 @@ function sd:layout_float(opt)
           api.nvim_win_close(self.winid, true)
         end
         api.nvim_del_autocmd(args.id)
+        clean_ctx()
       end,
     })
   end, 0)
@@ -309,6 +314,7 @@ function sd:show(opt)
   end
 
   local layout = diag_conf.show_layout
+  opt.args = opt.args or {}
   if vim.tbl_contains(opt.args, '++float') then
     layout = 'float'
   elseif vim.tbl_contains(opt.args, '++normal') then

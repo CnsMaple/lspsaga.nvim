@@ -26,12 +26,17 @@ local function clean_msg(msg)
 end
 
 function act:action_callback(tuples, enriched_ctx)
+  if #tuples == 0 then
+    vim.notify('No code actions available', vim.log.levels.INFO)
+    return
+  end
+
   local content = {}
 
   for index, client_with_actions in ipairs(tuples) do
     local action_title = ''
     if #client_with_actions ~= 2 then
-      vim.notify('There is something wrong in aciton_tuples')
+      vim.notify('[lspsaga] failed indexing client actions')
       return
     end
     if client_with_actions[2].title then
@@ -50,16 +55,24 @@ function act:action_callback(tuples, enriched_ctx)
     content[#content + 1] = action_title
   end
 
+  local max_height = math.floor(api.nvim_win_get_height(0) * config.code_action.max_height)
+
   local float_opt = {
-    height = #content,
+    height = math.min(#content, max_height),
     width = util.get_max_content_length(content),
   }
 
   if config.ui.title then
     float_opt.title = {
-      { config.ui.code_action .. ' CodeActions', 'Title' },
+      { config.ui.code_action .. ' Code Actions', 'Title' },
+      { ' ' .. #content .. ' ', 'SagaCount' },
     }
   end
+
+  content = vim.tbl_map(function(item)
+    item = item:gsub('\r\n', '\\r\\n')
+    return item:gsub('\n', '\\n')
+  end, content)
 
   self.action_bufnr, self.action_winid = win
     :new_float(float_opt, true)
@@ -68,12 +81,13 @@ function act:action_callback(tuples, enriched_ctx)
       ['filetype'] = 'saga_codeaction',
       ['buftype'] = 'nofile',
       ['bufhidden'] = 'wipe',
+      ['modifiable'] = false,
     })
     :winopt({
       ['conceallevel'] = 2,
       ['concealcursor'] = 'niv',
-      ['modifiable'] = false,
     })
+    :winhl('SagaNormal', 'SagaBorder')
     :wininfo()
 
   -- initial position in code action window
@@ -189,11 +203,6 @@ function act:send_request(main_buf, options, callback)
           action_tuples[#action_tuples + 1] = { 'gitsigns', action }
         end
       end
-    end
-
-    if #action_tuples == 0 then
-      vim.notify('No code actions available', vim.log.levels.INFO)
-      return
     end
 
     if callback then
@@ -320,7 +329,7 @@ end
 function act:code_action(options)
   if self.pending_request then
     vim.notify(
-      '[lspsaga.nvim] there is already a code action request please wait',
+      '[lspsaga] a code action has already been requested, please wait.',
       vim.log.levels.WARN
     )
     return
@@ -328,7 +337,7 @@ function act:code_action(options)
 
   self.pending_request = true
   options = options or {}
-  if not options.context then
+  if config.code_action.only_in_cursor and not options.context then
     options.context = {
       diagnostics = require('lspsaga.diagnostic'):get_cursor_diagnostic(),
     }

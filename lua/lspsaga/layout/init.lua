@@ -10,6 +10,8 @@ function M:arg_layout(args)
       layout = 'normal'
     elseif item:find('float') then
       layout = 'float'
+    elseif item:find('drowpdown') then
+      layout = 'dropdown'
     end
   end
   return layout
@@ -23,9 +25,9 @@ end
 local LEFT = 1
 local RIGHT = 2
 
-function M:left(height, width, bufnr, title)
+function M:left(height, width, bufnr, title, sp_global)
   local fn = self.layout == 'float' and float.left or normal.left
-  self.left_bufnr, self.left_winid = fn(height, width, bufnr, title)
+  self.left_bufnr, self.left_winid = fn(height, width, bufnr, title, sp_global)
   self.current = LEFT
   return self
 end
@@ -63,10 +65,18 @@ function M:setlines(lines)
   return self
 end
 
-function M:right(title)
+function M:right(opt)
   local fn = self.layout == 'float' and float.right or normal.right
-  self.right_bufnr, self.right_winid = fn(self.left_winid, title)
+  self.right_bufnr, self.right_winid = fn(self.left_winid, opt)
   self.current = RIGHT
+  return self
+end
+
+function M:dropdown(height)
+  --up
+  self.right_winid = api.nvim_get_current_win()
+  --down
+  self.left_bufnr, self.left_winid = require('lspsaga.layout.normal').left(height, nil, _, true)
   return self
 end
 
@@ -81,8 +91,10 @@ function M:done(fn)
 end
 
 function M:close()
-  for _, id in ipairs({ self.left_winid, self.right_winid }) do
-    if api.nvim_win_is_valid(id) then
+  for i, id in ipairs({ self.left_winid, self.right_winid }) do
+    if i == 1 and api.nvim_win_is_valid(id) then
+      api.nvim_win_close(id, true)
+    elseif i == 2 and self.layout ~= 'dropdown' and api.nvim_win_is_valid(id) then
       api.nvim_win_close(id, true)
     end
   end

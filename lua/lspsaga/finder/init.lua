@@ -32,30 +32,42 @@ local ns = api.nvim_create_namespace('SagaFinder')
 
 function fd:init_layout()
   local win_width = api.nvim_win_get_width(0)
-  self.lbufnr, self.lwinid, _, self.rwinid = ly:new(self.layout)
-    :left(
-      math.floor(vim.o.lines * config.finder.max_height),
-      math.floor(win_width * config.finder.left_width)
-    )
-    :bufopt({
-      ['filetype'] = 'sagafinder',
-      ['buftype'] = 'nofile',
-      ['bufhidden'] = 'wipe',
-      ['modifiable'] = true,
-    })
-    :winopt('wrap', false)
-    :right()
-    :bufopt({
-      ['buftype'] = 'nofile',
-      ['bufhidden'] = 'wipe',
-    })
-    :done()
+  if config.finder.right_width > 0.6 then
+    vim.notify('[lspsaga] finder right width must be less than 0.7')
+    config.finder.right_width = 0.5
+  end
+  if self.layout == 'dropdown' then
+    self.lbufnr, self.lwinid, _, self.rwinid =
+      ly:new(self.layout):dropdown(math.floor(vim.o.lines * config.finder.max_height)):done()
+  else
+    self.lbufnr, self.lwinid, _, self.rwinid = ly:new(self.layout)
+      :left(
+        math.floor(vim.o.lines * config.finder.max_height),
+        math.floor(win_width * config.finder.left_width),
+        nil,
+        nil,
+        self.layout == 'normal' and config.finder.sp_global or nil
+      )
+      :bufopt({
+        ['filetype'] = 'sagafinder',
+        ['buftype'] = 'nofile',
+        ['bufhidden'] = 'wipe',
+        ['modifiable'] = true,
+      })
+      :winopt('wrap', false)
+      :right({ width = config.finder.right_width })
+      :bufopt({
+        ['buftype'] = 'nofile',
+        ['bufhidden'] = 'wipe',
+      })
+      :done()
+  end
   self:apply_maps()
   self:event()
 end
 
 function fd:set_toggle_icon(icon, virtid, row, col)
-  api.nvim_buf_set_extmark(self.lbufnr, ns, row, col, {
+  buf_set_extmark(self.lbufnr, ns, row, col, {
     id = virtid,
     -- virt_text_win_col = col,
     virt_text = { { icon, 'SagaToggle' } },
@@ -95,13 +107,6 @@ function fd:method_title(method, row)
 end
 
 function fd:handler(method, results, spin_close, done)
-  if not results or util.res_isempty(results) then
-    spin_close()
-    if not config.finder.silent then
-      vim.notify(('[Lspsaga] no response of %s'):format(method), vim.log.levels.WARN)
-    end
-    return
-  end
   local rendered_fname = {}
 
   for client_id, item in pairs(results) do
@@ -116,6 +121,10 @@ function fd:handler(method, results, spin_close, done)
       local uri = res.uri or res.targetUri
       if i == 1 then
         self:method_title(method, row)
+        buf_set_extmark(self.lbufnr, ns, row, 0, {
+          virt_text = { { ' ' .. vim.tbl_count(item.result) .. ' ', 'SagaCount' } },
+          virt_text_pos = 'eol',
+        })
         row = row + 1
       end
       local fname = vim.uri_to_fname(uri)
@@ -213,20 +222,24 @@ function fd:event()
       end
       api.nvim_win_set_buf(self.rwinid, node.value.bufnr)
       if node.value.wipe then
-        box.ts_highlight(node.value.bufnr)
+        vim.bo[node.value.bufnr].filetype = self.ft
       end
-      api.nvim_set_option_value('winhl', 'Normal:SagaNormal,FloatBorder:SagaBorder', {
-        scope = 'local',
-        win = self.rwinid,
-      })
-      local range = node.value.selectionRange or node.value.range or node.value.targetSelectionRange
-      api.nvim_win_set_cursor(self.rwinid, { range.start.line + 1, range.start.character })
-      api.nvim_set_option_value('winbar', '', { scope = 'local', win = self.rwinid })
-      local rwin_conf = api.nvim_win_get_config(self.rwinid)
+      if config.finder.layout ~= 'dropdown' then
+        api.nvim_set_option_value('winhl', 'Normal:SagaNormal,FloatBorder:SagaBorder', {
+          scope = 'local',
+          win = self.rwinid,
+        })
+      end
       local client = vim.lsp.get_client_by_id(node.value.client_id)
       if not client then
         return
       end
+      local range = node.value.selectionRange or node.value.range or node.value.targetSelectionRange
+      local col =
+        lsp.util._get_line_byte_from_position(node.value.bufnr, range.start, client.offset_encoding)
+      api.nvim_win_set_cursor(self.rwinid, { range.start.line + 1, col })
+      api.nvim_set_option_value('winbar', '', { scope = 'local', win = self.rwinid })
+      local rwin_conf = api.nvim_win_get_config(self.rwinid)
       if self.layout == 'float' and config.ui.title and config.ui.border ~= 'none' then
         rwin_conf.title =
           util.path_sub(api.nvim_buf_get_name(node.value.bufnr), client.config.root_dir)
@@ -235,7 +248,12 @@ function fd:event()
       end
 
       api.nvim_win_call(self.rwinid, function()
-        fn.winrestview({ topline = range.start.line + 1 })
+        local height = api.nvim_win_get_height(self.rwinid)
+        local top = range.start.line + 1 - bit.rshift(height, 2)
+        if top <= 0 then
+          top = range.start.line
+        end
+        fn.winrestview({ topline = range.start.line + 1 - bit.rshift(height, 2) })
       end)
 
       buf_add_highlight(
@@ -243,7 +261,7 @@ function fd:event()
         ns,
         'SagaSearch',
         range.start.line,
-        lsp.util._get_line_byte_from_position(node.value.bufnr, range.start, client.offset_encoding),
+        col,
         lsp.util._get_line_byte_from_position(
           node.value.bufnr,
           range['end'],
@@ -296,7 +314,7 @@ function fd:toggle_or_open()
       return
     end
     if node.value.expand == nil then
-      local fname = vim.uri_to_fname(node.value.uri or node.value.targetUri)
+      local uri = node.value.uri or node.value.targetUri
       local client = lsp.get_client_by_id(node.value.client_id)
       if not client then
         return
@@ -312,7 +330,9 @@ function fd:toggle_or_open()
       }
       self:clean()
       local restore = win:minimal_restore()
-      vim.cmd.edit(fname)
+      local bufnr = vim.uri_to_bufnr(uri)
+      api.nvim_win_set_buf(0, bufnr)
+      vim.bo[bufnr].buflisted = true
       restore()
       api.nvim_win_set_cursor(0, pos)
       beacon({ pos[1] - 1, 0 }, #api.nvim_get_current_line())
@@ -353,7 +373,6 @@ function fd:toggle_or_open()
         { (' '):rep(tmp.value.inlevel) .. tmp.value.line }
       )
       self:set_highlight(tmp.value.inlevel, curlnum)
-      local islast = (not tmp.next or tmp.next.value.inlevel <= tmp.value.inlevel) and true or false
       if tmp.value.expand == false then
         self:set_toggle_icon(config.ui.collapse, tmp.value.virtid, curlnum, tmp.value.inlevel - 2)
         tmp.value.expand = true
@@ -388,11 +407,15 @@ function fd:apply_maps()
         if not client then
           return
         end
+        local range = curnode.value.range
+          or curnode.value.targetSelectionRange
+          or curnode.value.selectionRange
+
         local pos = {
-          curnode.value.range.start.line + 1,
+          range.start.line + 1,
           lsp.util._get_line_byte_from_position(
             curnode.value.bufnr,
-            curnode.value.range.start,
+            range.start,
             client.offset_encoding
           ),
         }
@@ -449,6 +472,9 @@ end
 function fd:new(args)
   local meth, layout, inexist = box.parse_argument(args)
   self.inexist = inexist
+  if not self.inexist then
+    self.inexist = config.finder.sp_inexist
+  end
   self.layout = layout or config.finder.layout
   if #meth == 0 then
     meth = vim.split(config.finder.default, '+', { plain = true })
@@ -459,9 +485,10 @@ function fd:new(args)
     return #util.get_client_by_method(method) > 0
   end, methods)
   local curbuf = api.nvim_get_current_buf()
+  self.ft = vim.bo[curbuf].filetype
   if #methods == 0 then
     vim.notify(
-      ('[Lspsaga] all server of %s buffer does not these methods %s'):format(
+      ('[lspsaga] no servers of buffer %s makes these methods available %s'):format(
         curbuf,
         table.concat(args, ' ')
       ),
@@ -473,7 +500,7 @@ function fd:new(args)
   self.list = slist.new()
   local params = lsp.util.make_position_params()
   params.context = {
-    includeDeclaration = false,
+    includeDeclaration = true,
   }
 
   local spin_close = box.spinner()
@@ -485,17 +512,24 @@ function fd:new(args)
       lsp.buf_request_all(curbuf, method, params, function(results)
         count = count + 1
         results = box.filter(method, results)
-        retval[method] = results
-        if #vim.tbl_keys(retval) == #methods then
+        if results and not util.res_isempty(results) then
+          retval[method] = results
+        end
+        if count == #methods then
           coroutine.resume(co)
         end
       end)
     end
     coroutine.yield()
     count = 0
+    local total = #vim.tbl_keys(retval)
     for method, results in pairs(retval) do
       count = count + 1
-      self:handler(method, results, spin_close, count == #methods)
+      self:handler(method, results, spin_close, count == total)
+    end
+    if not self.lwinid then
+      spin_close()
+      vim.notify('[Lspsaga] finder no any results to show', vim.log.levels.WARN)
     end
   end))
 end

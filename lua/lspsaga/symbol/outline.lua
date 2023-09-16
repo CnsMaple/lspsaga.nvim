@@ -45,7 +45,7 @@ local function outline_in_float()
       ['bufhidden'] = 'wipe',
     })
     :winopt('wrap', false)
-    :right('preview')
+    :right({ title = 'preview' })
     :bufopt({
       ['buftype'] = 'nofile',
       ['bufhidden'] = 'wipe',
@@ -85,22 +85,39 @@ local function outline_normal_win()
     :wininfo()
 end
 
-function ot:parse(symbols, bufnr, list)
+function ot:parse(symbols, curline)
   local row = 0
-  bufnr = bufnr or self.bufnr
-  list = list or self.list
+  if not vim.bo[self.bufnr].modifiable then
+    api.nvim_set_option_value('modifiable', true, { buf = self.bufnr })
+  end
+  local pos = {}
 
   local function recursive_parse(data, level)
     for i, node in ipairs(data) do
       level = level or 0
       local indent = '    ' .. ('  '):rep(level)
       node.name = node.name == ' ' and '_' or node.name
-      buf_set_lines(bufnr, row, -1, false, { indent .. node.name })
+      buf_set_lines(self.bufnr, row, -1, false, { indent .. node.name:gsub('\n', '') })
+
       row = row + 1
       if level == 0 then
         node.winline = row
       end
-      buf_set_extmark(bufnr, ns, row - 1, #indent - 2, {
+
+      local range = node.range or node.selectionRange or node.targetRange
+      if node.location then
+        range = node.location.range
+      end
+      if curline then
+        if
+          range.start.line == curline - 1
+          or (curline - 1 >= range.start.line and curline - 1 <= range['end'].line)
+        then
+          pos = { row, #indent }
+        end
+      end
+
+      buf_set_extmark(self.bufnr, ns, row - 1, #indent - 2, {
         virt_text = { { kind[node.kind][2], 'Saga' .. kind[node.kind][1] } },
         virt_text_pos = 'overlay',
       })
@@ -110,7 +127,7 @@ function ot:parse(symbols, bufnr, list)
           { row == 1 and config.ui.lines[5] or config.ui.lines[2], 'SagaVirtLine' },
           { config.ui.lines[4]:rep(2), 'SagaVirtLine' },
         }
-        buf_set_extmark(bufnr, ns, row - 1, 0, {
+        buf_set_extmark(self.bufnr, ns, row - 1, 0, {
           virt_text = virt,
           virt_text_pos = 'overlay',
         })
@@ -124,7 +141,7 @@ function ot:parse(symbols, bufnr, list)
           else
             virt = { { config.ui.lines[3], 'SagaVirtLine' } }
           end
-          buf_set_extmark(bufnr, ns, row - 1, j - 1, {
+          buf_set_extmark(self.bufnr, ns, row - 1, j - 1, {
             virt_text = virt,
             virt_text_pos = 'overlay',
           })
@@ -132,7 +149,7 @@ function ot:parse(symbols, bufnr, list)
       end
 
       if config.outline.detail then
-        buf_set_extmark(bufnr, ns, row - 1, 0, {
+        buf_set_extmark(self.bufnr, ns, row - 1, 0, {
           virt_text = { { node.detail or '', 'SagaDetail' } },
         })
       end
@@ -145,21 +162,27 @@ function ot:parse(symbols, bufnr, list)
       if node.children and #node.children > 0 then
         copy.expand = true
         copy.virtid = uv.hrtime()
-        buf_set_extmark(bufnr, ns, row - 1, #indent - 4, {
+        buf_set_extmark(self.bufnr, ns, row - 1, #indent - 4, {
           id = copy.virtid,
           virt_text = { { config.ui.collapse, 'SagaToggle' } },
           virt_text_pos = 'overlay',
         })
-        slist.tail_push(list, copy)
+        slist.tail_push(self.list, copy)
         recursive_parse(node.children, level + 1)
       else
-        slist.tail_push(list, copy)
+        slist.tail_push(self.list, copy)
       end
     end
   end
 
   recursive_parse(symbols)
-  api.nvim_set_option_value('modifiable', false, { buf = bufnr })
+  if #pos > 0 then
+    api.nvim_win_set_cursor(self.winid, pos)
+    if config.outline.layout == 'normal' then
+      beacon({ pos[1] - 1, pos[2] }, #api.nvim_get_current_line())
+    end
+  end
+  api.nvim_set_option_value('modifiable', false, { buf = self.bufnr })
 end
 
 function ot:collapse(node, curlnum)
@@ -271,8 +294,8 @@ function ot:toggle_or_jump()
     api.nvim_set_option_value('modifiable', false, { buf = self.bufnr })
     return
   end
-  local pos =
-    { node.value.selectionRange.start.line + 1, node.value.selectionRange.start.character }
+  local range = node.value.selectionRange or node.value.location.range
+  local pos = { range.start.line + 1, range.start.character }
 
   local main_buf = self.main_buf
   if config.outline.layout == 'normal' and config.outline.close_after_jump then
@@ -291,11 +314,11 @@ function ot:toggle_or_jump()
 end
 
 function ot:create_preview_win(lines)
-  local winid = fn.bufwinid(self.main_buf)
+  local winid = api.nvim_get_current_win()
   local origianl_win_height = api.nvim_win_get_height(winid)
   local original_win_width = api.nvim_win_get_width(winid)
-  local max_height = bit.rshift(origianl_win_height, 2)
-  local max_width = bit.rshift(original_win_width, 2)
+  local max_height = math.floor(origianl_win_height * 0.5)
+  local max_width = math.floor(original_win_width * 0.7)
 
   local float_opt = {
     relative = 'editor',
@@ -346,7 +369,9 @@ function ot:refresh(group)
         return
       end
       api.nvim_set_option_value('modifiable', true, { buf = self.bufnr })
-      self:parse(args.data.symbols)
+      vim.schedule(function()
+        self:parse(args.data.symbols)
+      end)
     end,
   })
 end
@@ -366,7 +391,7 @@ function ot:preview(group)
         end
         return
       end
-      local range = node.value.range
+      local range = node.value.range or node.value.location.range
       local lines =
         api.nvim_buf_get_lines(self.main_buf, range.start.line, range['end'].line + 1, false)
       if not self.preview_winid or not api.nvim_win_is_valid(self.preview_winid) then
@@ -376,7 +401,7 @@ function ot:preview(group)
 
       api.nvim_buf_set_lines(self.preview_bufnr, 0, -1, false, lines)
       local win_conf = api.nvim_win_get_config(self.preview_winid)
-      local row = fn.screenrow()
+      local row = fn.winline()
       win_conf.row = row - 1
       win_conf.height = math.min(#lines, bit.rshift(vim.o.lines, 1))
       api.nvim_win_set_config(self.preview_winid, win_conf)
@@ -501,10 +526,13 @@ function ot:outline(buf)
   end
 
   self.main_buf = buf or api.nvim_get_current_buf()
-  local res = symbol:get_buf_symbols(self.main_buf)
+  local curline = api.nvim_win_get_cursor(0)[1]
+  local res = not util.nvim_ten() and symbol:get_buf_symbols(buf)
+    or require('lspsaga.symbol.head'):get_buf_symbols(buf)
+
   if not res or not res.symbols or #res.symbols == 0 then
     vim.notify(
-      '[lspsaga] get symbols failed server may not initialed try again later',
+      '[lspsaga] failed finding symbols - server may not be initialized, try again later.',
       vim.log.levels.INFO
     )
     return
@@ -522,7 +550,7 @@ function ot:outline(buf)
   end
 
   self.list = slist.new()
-  self:parse(res.symbols)
+  self:parse(res.symbols, curline)
   self:keymap()
 end
 

@@ -26,7 +26,8 @@ function ch:clean()
       return
     end
     if node.value.bufnr and api.nvim_buf_is_valid(node.value.bufnr) and node.value.rendered then
-      api.nvim_buf_del_keymap(node.value.bufnr, 'n', config.finder.keys.close)
+      api.nvim_buf_clear_namespace(node.value.bufnr, ns, 0, -1)
+      pcall(api.nvim_buf_del_keymap, node.value.bufnr, 'n', config.finder.keys.close)
     end
   end)
 
@@ -74,13 +75,13 @@ function ch:spinner(node)
   local frame = 1
   local timer = uv.new_timer()
 
+  local col = node.value.winline == 1 and 0 or node.value.inlevel - 4
   if self.left_bufnr and api.nvim_buf_is_loaded(self.left_bufnr) then
     timer:start(
       0,
       50,
       vim.schedule_wrap(function()
         vim.bo[self.left_bufnr].modifiable = true
-        local col = node.value.winline == 1 and 0 or node.value.inlevel - 4
         buf_set_extmark(self.left_bufnr, ns, node.value.winline - 1, col, {
           id = node.value.virtid,
           virt_text = { { spinner[frame], 'SagaSpinner' } },
@@ -91,7 +92,13 @@ function ch:spinner(node)
       end)
     )
   end
-  return timer
+  return function()
+    if timer and timer:is_active() then
+      timer:stop()
+      timer:close()
+      self:set_toggle_icon(config.ui.expand, node.value.winline - 1, col, node.value.virtid)
+    end
+  end
 end
 
 function ch:set_toggle_icon(icon, row, col, virtid)
@@ -111,7 +118,10 @@ end
 
 function ch:toggle_or_request()
   if self.pending_request then
-    vim.notify(('[Lspsaga] already have a request for %s'):format(self.method), vim.log.levels.WARN)
+    vim.notify(
+      ('[lspsaga] a request for %s has already been sent, please wait.'):format(self.method),
+      vim.log.levels.WARN
+    )
     return
   end
   local curlnum = api.nvim_win_get_cursor(0)[1]
@@ -122,9 +132,9 @@ function ch:toggle_or_request()
   local client = vim.lsp.get_client_by_id(curnode.value.client_id)
   local next = curnode.next
   if not next or next.value.inlevel <= curnode.value.inlevel then
-    local timer = self:spinner(curnode)
+    local timer_close = self:spinner(curnode)
     local item = self.method == get_method(2) and curnode.value.from or curnode.value.to
-    self:call_hierarchy(item, client, timer, curlnum)
+    self:call_hierarchy(item, client, timer_close, curlnum)
     return
   end
   local level = curnode.value.inlevel
@@ -231,18 +241,27 @@ function ch:keymap()
         return
       end
       local client = lsp.get_client_by_id(curnode.value.client_id)
+      if not client then
+        return
+      end
       local data = self.method == get_method(2) and curnode.value.from or curnode.value.to
-      local fname = vim.uri_to_fname(data.uri)
       local start = data.selectionRange.start
-      local pos = { start.line + 1 }
       self:clean()
       local restore = win:minimal_restore()
-      vim.cmd[action](fname)
+      vim.cmd(action)
+      local uri = data.uri
+      if not string.match(uri, '^[^:]+://') then -- not uri
+        uri = vim.uri_from_fname(uri)
+      end
+      vim.lsp.util.jump_to_location({
+        uri = uri,
+        range = {
+          start = start,
+          ['end'] = start,
+        },
+      }, client.offset_encoding)
       restore()
-      local curbuf = api.nvim_get_current_buf()
-      pos[2] = lsp.util._get_line_byte_from_position(curbuf, start, client.offset_encoding)
-      api.nvim_win_set_cursor(0, pos)
-      beacon({ pos[1], 0 }, #api.nvim_get_current_line())
+      beacon({ start.line, 0 }, #api.nvim_get_current_line())
     end)
   end
 end
@@ -255,7 +274,13 @@ function ch:peek_view()
       if not self.left_winid or not api.nvim_win_is_valid(self.left_winid) then
         return
       end
-      local curlnum = api.nvim_win_get_cursor(self.left_winid)[1]
+      local curlnum, curcol = unpack(api.nvim_win_get_cursor(self.left_winid))
+      local textwidth = vim.fn.strwidth(api.nvim_get_current_line())
+      local win_width = api.nvim_win_get_width(self.left_winid)
+      if textwidth - curcol >= win_width - 5 then
+        vim.fn.winrestview({ leftcol = win_width - 5 })
+      end
+
       local curnode = slist.find_node(self.list, curlnum)
       if not curnode then
         return
@@ -268,9 +293,39 @@ function ch:peek_view()
       end
       local range = data.selectionRange
       api.nvim_win_set_buf(self.right_winid, curnode.value.bufnr)
+      api.nvim_set_option_value('winhl', 'Normal:SagaNormal,FloatBorder:SagaBorder', {
+        scope = 'local',
+        win = self.right_winid,
+      })
       curnode.value.rendered = true
       vim.bo[curnode.value.bufnr].filetype = vim.bo[self.main_buf].filetype
-      api.nvim_win_set_cursor(self.right_winid, { range.start.line + 1, range.start.character + 1 })
+      local client = vim.lsp.get_client_by_id(curnode.value.client_id)
+      if not client then
+        return
+      end
+      local col = lsp.util._get_line_byte_from_position(
+        curnode.value.bufnr,
+        range.start,
+        client.offset_encoding
+      )
+
+      local right_bufnr = vim.api.nvim_win_get_buf(self.right_winid)
+      local total_lines = vim.api.nvim_buf_line_count(right_bufnr)
+      if range.start.line >= 0 and range.start.line < total_lines then
+        api.nvim_win_set_cursor(self.right_winid, { range.start.line + 1, col })
+      end
+      api.nvim_buf_add_highlight(
+        curnode.value.bufnr,
+        ns,
+        'SagaSearch',
+        range.start.line,
+        col,
+        lsp.util._get_line_byte_from_position(
+          curnode.value.bufnr,
+          range['end'],
+          client.offset_encoding
+        )
+      )
       util.map_keys(curnode.value.bufnr, config.callhierarchy.keys.shuttle, function()
         window_shuttle(self.left_winid, self.right_winid)
       end)
@@ -304,7 +359,7 @@ function ch:render_virtline(row, inlevel)
   end
 end
 
-function ch:call_hierarchy(item, client, timer, curlnum)
+function ch:call_hierarchy(item, client, timer_close, curlnum)
   self.pending_request = true
   client.request(self.method, { item = item }, function(_, res)
     self.pending_request = false
@@ -312,20 +367,20 @@ function ch:call_hierarchy(item, client, timer, curlnum)
     local inlevel = curlnum == 0 and 2 or fn.indent(curlnum)
     local curnode = slist.find_node(self.list, curlnum)
 
-    if curnode and timer and timer:is_active() then
-      local icon = (res and #res > 0) and config.ui.expand or config.ui.collapse
-      self:set_toggle_icon(icon, curlnum - 1, curnode.value.inlevel - 4, curnode.value.virtid)
-      timer:stop()
-      timer:close()
+    if curnode then
+      timer_close()
     end
 
     if not res or vim.tbl_isempty(res) then
+      vim.notify('[lspsaga] callhierarchy result is empty', vim.log.levels.WARN)
       return
     end
+
     if not self.left_winid or not api.nvim_win_is_valid(self.left_winid) then
       local height = bit.rshift(vim.o.lines, 1) - 4
+      local win_width = api.nvim_win_get_width(0)
       self.left_bufnr, self.left_winid, self.right_bufnr, self.right_winid = ly:new(self.layout)
-        :left(height, 20)
+        :left(height, math.floor(win_width * config.callhierarchy.left_width))
         :bufopt({
           ['filetype'] = 'sagacallhierarchy',
           ['buftype'] = 'nofile',
@@ -347,7 +402,6 @@ function ch:call_hierarchy(item, client, timer, curlnum)
       curnode.value.expand = true
       self:set_toggle_icon(config.ui.collapse, curlnum - 1, inlevel - 4, curnode.value.virtid)
     end
-    local tmp = curnode
     vim.bo[self.left_bufnr].modifiable = true
 
     for _, val in ipairs(res) do
@@ -389,13 +443,13 @@ end
 
 function ch:send_prepare_call()
   if self.pending_request then
-    vim.notify('there is already a request please wait.')
+    vim.notify('[lspsaga] a request has already been sent, please wait.')
     return
   end
   self.main_buf = api.nvim_get_current_buf()
   local clients = util.get_client_by_method(get_method(1))
   if #clients == 0 then
-    vim.notify('[Lspsaga] all clients of this buffer not support callhierarchy')
+    vim.notify('[lspsaga] callhierarchy is not supported by the clients of the current buffer')
     return
   end
   local client

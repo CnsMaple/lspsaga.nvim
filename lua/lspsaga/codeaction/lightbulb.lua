@@ -4,6 +4,7 @@ local uv = vim.version().minor >= 10 and vim.uv or vim.loop
 local config = require('lspsaga').config
 local nvim_buf_set_extmark = api.nvim_buf_set_extmark
 local inrender_row = -1
+local inrender_buf = nil
 
 local function get_name()
   return 'SagaLightBulb'
@@ -18,6 +19,9 @@ if not defined then
 end
 
 local function update_lightbulb(bufnr, row)
+  if not bufnr or not api.nvim_buf_is_valid(bufnr) then
+    return
+  end
   api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
   local name = get_name()
   pcall(fn.sign_unplace, name, { id = inrender_row, buffer = bufnr })
@@ -45,6 +49,7 @@ local function update_lightbulb(bufnr, row)
   end
 
   inrender_row = row + 1
+  inrender_buf = bufnr
 end
 
 local function render(bufnr)
@@ -70,10 +75,14 @@ end
 local timer = uv.new_timer()
 
 local function update(buf)
+  timer:stop()
+  update_lightbulb(inrender_buf)
   timer:start(config.lightbulb.debounce, 0, function()
     timer:stop()
     vim.schedule(function()
-      render(buf)
+      if api.nvim_buf_is_valid(buf) and api.nvim_get_current_buf() == buf then
+        render(buf)
+      end
     end)
   end)
 end
@@ -85,6 +94,9 @@ local function lb_autocmd()
     group = g,
     callback = function(opt)
       local client = lsp.get_client_by_id(opt.data.client_id)
+      if not client then
+        return
+      end
       if not client.supports_method('textDocument/codeAction') then
         return
       end
@@ -99,24 +111,26 @@ local function lb_autocmd()
       api.nvim_create_autocmd('CursorMoved', {
         group = group,
         buffer = buf,
-        callback = function()
-          update(buf)
+        callback = function(args)
+          update(args.buf)
         end,
       })
 
-      api.nvim_create_autocmd('InsertEnter', {
-        group = group,
-        buffer = buf,
-        callback = function()
-          update_lightbulb(buf, nil)
-        end,
-      })
+      if not config.lightbulb.enable_in_insert then
+        api.nvim_create_autocmd('InsertEnter', {
+          group = group,
+          buffer = buf,
+          callback = function(args)
+            update_lightbulb(args.buf, nil)
+          end,
+        })
+      end
 
       api.nvim_create_autocmd('BufLeave', {
         group = group,
         buffer = buf,
-        callback = function()
-          update_lightbulb(buf, nil)
+        callback = function(args)
+          update_lightbulb(args.buf, nil)
         end,
       })
     end,
@@ -125,11 +139,7 @@ local function lb_autocmd()
   api.nvim_create_autocmd('LspDetach', {
     group = g,
     callback = function(args)
-      local group_name = name .. tostring(args.buf)
-      local ok = pcall(api.nvim_get_autocmds, { group = group_name })
-      if ok then
-        api.nvim_del_augroup_by_name(group_name)
-      end
+      pcall(api.nvim_del_augroup_by_name, 'SagaLightBulb' .. tostring(args.buf))
     end,
   })
 end
