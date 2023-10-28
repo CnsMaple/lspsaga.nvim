@@ -31,11 +31,8 @@ end
 local ns = api.nvim_create_namespace('SagaFinder')
 
 function fd:init_layout()
-  local win_width = api.nvim_win_get_width(0)
-  if config.finder.right_width > 0.6 then
-    vim.notify('[lspsaga] finder right width must be less than 0.7')
-    config.finder.right_width = 0.5
-  end
+  self.callerwinid = api.nvim_get_current_win()
+  local WIDTH = api.nvim_win_get_width(self.callerwinid)
   if self.layout == 'dropdown' then
     self.lbufnr, self.lwinid, _, self.rwinid =
       ly:new(self.layout):dropdown(math.floor(vim.o.lines * config.finder.max_height)):done()
@@ -43,7 +40,7 @@ function fd:init_layout()
     self.lbufnr, self.lwinid, _, self.rwinid = ly:new(self.layout)
       :left(
         math.floor(vim.o.lines * config.finder.max_height),
-        math.floor(win_width * config.finder.left_width),
+        math.floor(WIDTH * config.finder.left_width),
         nil,
         nil,
         self.layout == 'normal' and config.finder.sp_global or nil
@@ -55,12 +52,15 @@ function fd:init_layout()
         ['modifiable'] = true,
       })
       :winopt('wrap', false)
-      :right({ width = config.finder.right_width })
+      :right()
       :bufopt({
         ['buftype'] = 'nofile',
         ['bufhidden'] = 'wipe',
       })
       :done()
+    if not self.lwinid then
+      return
+    end
   end
   self:apply_maps()
   self:event()
@@ -128,6 +128,9 @@ function fd:handler(method, results, spin_close, done)
         row = row + 1
       end
       local fname = vim.uri_to_fname(uri)
+      if config.finder.fname_sub and type(config.finder.fname_sub) == 'function' then
+        fname = config.finder.fname_sub(fname)
+      end
       local client = lsp.get_client_by_id(client_id)
       if not client then
         return
@@ -328,13 +331,15 @@ function fd:toggle_or_open()
           client.offset_encoding
         ),
       }
+      local callerwinid = self.callerwinid
       self:clean()
       local restore = win:minimal_restore()
       local bufnr = vim.uri_to_bufnr(uri)
-      api.nvim_win_set_buf(0, bufnr)
+      api.nvim_win_set_buf(callerwinid, bufnr)
       vim.bo[bufnr].buflisted = true
       restore()
-      api.nvim_win_set_cursor(0, pos)
+      api.nvim_set_current_win(callerwinid)
+      api.nvim_win_set_cursor(callerwinid, pos)
       beacon({ pos[1] - 1, 0 }, #api.nvim_get_current_line())
       return
     end
@@ -522,10 +527,14 @@ function fd:new(args)
     end
     coroutine.yield()
     count = 0
-    local total = #vim.tbl_keys(retval)
-    for method, results in pairs(retval) do
+    local keys = vim.tbl_keys(retval)
+    table.sort(keys, function(a, b)
+      return util.tbl_index(methods, a) < util.tbl_index(methods, b)
+    end)
+
+    for _, m in pairs(keys) do
       count = count + 1
-      self:handler(method, results, spin_close, count == total)
+      self:handler(m, retval[m], spin_close, count == #keys)
     end
     if not self.lwinid then
       spin_close()

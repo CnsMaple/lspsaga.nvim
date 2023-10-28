@@ -10,6 +10,9 @@ def.__index = def
 -- a double linked list for store the node infor
 local ctx = {}
 
+local IS_PEEK = 1
+local IS_GOTO = 2
+
 local function clean_ctx()
   for i, _ in pairs(ctx) do
     ctx[i] = nil
@@ -70,6 +73,7 @@ function def:apply_maps(bufnr)
         local index = get_node_idx(self.list, api.nvim_get_current_win())
         local start = self.list[index].selectionRange.start
         local client = lsp.get_client_by_id(self.list[index].client_id)
+        local pos = api.nvim_win_get_cursor(self.list[index].winid)
         if not client then
           return
         end
@@ -77,24 +81,22 @@ function def:apply_maps(bufnr)
           vim.cmd[action]()
           return
         end
+        local restore = self.opt_restore
         self:close_all()
         local curbuf = api.nvim_get_current_buf()
         if action ~= 'edit' or curbuf ~= bufnr then
           vim.cmd[action](fname)
         end
-        local ok = lsp.util.jump_to_location({
-          uri = vim.uri_from_fname(fname),
-          range = {
-            start = start,
-            ['end'] = start,
-          },
-        }, client.offset_encoding)
-        if not ok then
-          api.nvim_err_writeln('[Lspsaga] jump failed on definition')
-          return
+        restore()
+        if not config.definition.save_pos then
+          pos = {
+            start.line + 1,
+            lsp.util._get_line_byte_from_position(0, start, client.offset_encoding),
+          }
         end
+        api.nvim_win_set_cursor(0, pos)
         local width = #api.nvim_get_current_line()
-        beacon({ start.line, vim.fn.col('.') }, width)
+        beacon({ pos[1] - 1, vim.fn.col('.') }, width)
       end)
     else
       util.map_keys(bufnr, map, function()
@@ -127,7 +129,10 @@ function def:create_win(bufnr, root_dir)
     end
     return win
       :new_float(float_opt, true)
-      :winopt('winbar', '')
+      :winopt({
+        ['winbar'] = '',
+        ['signcolumn'] = 'no',
+      })
       :winhl('SagaNormal', 'SagaBorder')
       :wininfo()
   end
@@ -151,10 +156,6 @@ function def:clean_event()
         return
       end
       local bufnr = self.list[index].bufnr
-
-      if self.list[index].restore then
-        self.opt_restore()
-      end
       local prev = self.list[index - 1] and self.list[index - 1] or nil
       table.remove(self.list, index)
       if prev then
@@ -176,8 +177,8 @@ function def:clean_event()
   })
 end
 
-function def:peek_definition(method)
-  if self.pending_reqeust then
+function def:definition_request(method, handler_T, args)
+  if self.pending_request then
     vim.notify(
       '[lspsaga] a peek_definition request has already been sent, please wait.',
       vim.log.levels.WARN
@@ -192,115 +193,112 @@ function def:peek_definition(method)
 
   local current_buf = api.nvim_get_current_buf()
 
-  -- push a tag stack
-  local pos = api.nvim_win_get_cursor(0)
-  local current_word = fn.expand('<cword>')
-  local from = { current_buf, pos[1], pos[2] + 1, 0 }
-  local items = { { tagname = current_word, from = from } }
-  fn.settagstack(api.nvim_get_current_win(), { items = items }, 't')
-
   local params = lsp.util.make_position_params()
-  local method_name = get_method(method)
-  self.opt_restore = win:minimal_restore()
-
+  if not self.opt_restore then
+    self.opt_restore = win:minimal_restore()
+  end
   self.pending_request = true
-  local count = #util.get_client_by_method(method_name)
+  local count = #util.get_client_by_method(method)
 
-  --set jumplist
-  vim.cmd("normal! m'")
-
-  lsp.buf_request(current_buf, method_name, params, function(_, result, context)
-    count = count - 1
+  lsp.buf_request(current_buf, method, params, function(_, result, context)
     self.pending_request = false
-    if not result or next(result) == nil then
+    count = count - 1
+    if not result or vim.tbl_count(result) == 0 then
       if #self.list == 0 and count == 0 then
         vim.notify(
-          '[lspsaga] response of request method ' .. method_name .. ' is empty',
+          '[lspsaga] response of request method ' .. context.method .. ' is empty',
           vim.log.levels.WARN
         )
       end
       return
     end
-    if result.uri then
-      result = { result }
-    end
 
-    local node = {
-      bufnr = vim.uri_to_bufnr(result[1].targetUri or result[1].uri),
-      selectionRange = result[1].targetSelectionRange or result[1].range,
-      client_id = context.client_id,
-    }
-    if not api.nvim_buf_is_loaded(node.bufnr) then
-      fn.bufload(node.bufnr)
-      api.nvim_set_option_value('bufhidden', 'wipe', { buf = node.bufnr })
-      node.wipe = true
-    end
-    local root_dir = lsp.get_client_by_id(context.client_id).config.root_dir
-    _, node.winid = self:create_win(node.bufnr, root_dir)
-    local client = lsp.get_client_by_id(context.client_id)
-    if not client then
+    -- set jumplist
+    vim.cmd("normal! m'")
+    --
+    -- -- push a tag stack
+    local pos = api.nvim_win_get_cursor(0)
+    local current_word = fn.expand('<cword>')
+    local from = { current_buf, pos[1], pos[2] + 1, 0 }
+    local items = { { tagname = current_word, from = from } }
+    fn.settagstack(api.nvim_get_current_win(), { items = items }, 't')
+
+    local res
+    if not vim.tbl_islist(result) then
+      res = result
+    elseif result[1] then
+      res = result[1]
+    else
       return
     end
-    api.nvim_win_set_cursor(node.winid, {
-      node.selectionRange.start.line + 1,
-      lsp.util._get_line_byte_from_position(
-        node.bufnr,
-        node.selectionRange.start,
-        client.offset_encoding
-      ),
-    })
-    self:apply_maps(node.bufnr)
-    self.list[#self.list + 1] = node
+
+    if handler_T == IS_PEEK then
+      return self:peek_handler(res, context)
+    end
+    if handler_T == IS_GOTO then
+      return self:goto_handler(res, context, args)
+    end
   end)
 end
 
+function def:peek_handler(result, context)
+  local node = {
+    bufnr = vim.uri_to_bufnr(result.targetUri or result.uri),
+    selectionRange = result.targetSelectionRange or result.range,
+    client_id = context.client_id,
+  }
+  if not api.nvim_buf_is_loaded(node.bufnr) then
+    fn.bufload(node.bufnr)
+    api.nvim_set_option_value('bufhidden', 'wipe', { buf = node.bufnr })
+    node.wipe = true
+  end
+  local root_dir = lsp.get_client_by_id(context.client_id).config.root_dir
+  _, node.winid = self:create_win(node.bufnr, root_dir)
+  local client = lsp.get_client_by_id(context.client_id)
+  if not client then
+    return
+  end
+  api.nvim_win_set_cursor(node.winid, {
+    node.selectionRange.start.line + 1,
+    lsp.util._get_line_byte_from_position(
+      node.bufnr,
+      node.selectionRange.start,
+      client.offset_encoding
+    ),
+  })
+  self:apply_maps(node.bufnr)
+  self.list[#self.list + 1] = node
+end
+
 -- override the default the defintion handler
-function def:goto_definition(method, args)
-  lsp.handlers[get_method(method)] = function(_, result, lsp_ctx, _)
-    if not result or vim.tbl_isempty(result) then
-      return
-    end
-    local res = {}
-
-    if type(result[1]) == 'table' then
-      res.uri = result[1].uri or result[1].targetUri
-      res.range = result[1].range or result[1].targetSelectionRange
-    else
-      res.uri = result.uri or result.targetUri
-      res.range = result.range or result.targetSelectionRange
-    end
-    local client = lsp.get_client_by_id(lsp_ctx.client_id)
-
-    if vim.tbl_isempty(res) or not client then
-      return
-    end
-
-    --set jumplist
-    vim.cmd("normal! m'")
-
-    local target_bufnr = vim.uri_to_bufnr(res.uri)
-    if not api.nvim_buf_is_loaded(target_bufnr) then
-      vim.fn.bufload(target_bufnr)
-    end
-    if args and #args > 0 then
-      vim.cmd[args[1]]()
-    end
-    api.nvim_win_set_buf(0, target_bufnr)
-    vim.lsp.util.jump_to_location({
-      uri = res.uri,
-      range = {
-        start = res.range.start,
-        ['end'] = res.range.start,
-      },
-    }, client.offset_encoding)
-    local width = #api.nvim_get_current_line()
-    beacon({ res.range.start.line, vim.fn.col('.') }, width)
+function def:goto_handler(result, context, args)
+  local client = lsp.get_client_by_id(context.client_id)
+  if not client then
+    return
   end
-  if method == 1 then
-    lsp.buf.definition()
-  elseif method == 2 then
-    lsp.buf.type_definition()
+  local range = result.range or result.targetSelectionRange
+
+  local target_bufnr = vim.uri_to_bufnr(result.uri or result.targetUri)
+  if not api.nvim_buf_is_loaded(target_bufnr) then
+    vim.fn.bufload(target_bufnr)
   end
+  vim.bo[target_bufnr].buflisted = true
+  if args and #args > 0 then
+    vim.cmd[args[1]]()
+  end
+  api.nvim_win_set_buf(0, target_bufnr)
+
+  api.nvim_win_set_cursor(0, {
+    range.start.line + 1,
+    lsp.util._get_line_byte_from_position(target_bufnr, range.start, client.offset_encoding),
+  })
+  local width = #api.nvim_get_current_line()
+  beacon({ range.start.line, vim.fn.col('.') }, width)
+end
+
+function def:init(method, jump_T, args)
+  local t = jump_T == IS_PEEK and IS_PEEK or IS_GOTO
+  self:definition_request(get_method(method), t, args)
 end
 
 return setmetatable(ctx, def)

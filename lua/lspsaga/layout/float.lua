@@ -50,31 +50,59 @@ function M.right(left_winid, opt)
   opt = opt or {}
   local win_conf = api.nvim_win_get_config(left_winid)
   local original = vim.deepcopy(win_conf)
+  local row = win_conf.row[false]
+  local wincol = fn.win_screenpos(win_conf.win)[2]
+  local right_spaces = vim.o.columns - wincol - original.width - original.col[false]
+  local left_spaces = wincol + original.col[false]
+  local percent = opt.width or 0.7
+
+  local right = math.ceil(right_spaces * percent)
+  local left = math.ceil(left_spaces * percent)
+  local in_right = false
+  local WIDTH = api.nvim_win_get_width(original.win)
+  local extra = WIDTH < original.width and WIDTH - original.width or 0
+  if (vim.o.columns - WIDTH - wincol) > 0 and left > 45 then
+    extra = 0
+  end
+
+  win_conf.width = nil
+  if right > 45 then
+    win_conf.col = win_conf.col[false] + original.width + 2
+    win_conf.width = right
+    in_right = true
+  elseif left > 45 then
+    win_conf.width = math.floor(left * percent)
+    win_conf.col = original.col[false] - win_conf.width + extra - 1
+  -- back to right
+  elseif right > 20 then
+    win_conf.col = win_conf.col[false] + original.width + 2
+    win_conf.width = right
+    in_right = true
+  end
+
   if original.border then
     local map = border_map()
-    original.border[5] = map[ui.border][1]
-    original.border[3] = map[ui.border][2]
+    if not in_right then
+      original.border[1] = map[ui.border][2]
+      original.border[7] = map[ui.border][1]
+      win_conf.border[4] = ''
+    else
+      original.border[5] = map[ui.border][1]
+      original.border[3] = map[ui.border][2]
+      win_conf.border[8] = ''
+      win_conf.border[7] = ''
+    end
     api.nvim_win_set_config(left_winid, original)
   end
 
-  local WIDTH = api.nvim_win_get_width(win_conf.win)
-  local col = win_conf.col[false] + win_conf.width + 2
-  local row = win_conf.row[false]
-  if opt.width then
-    win_conf.width = math.floor(WIDTH * opt.width)
-  end
-
   win_conf.row = row
-  win_conf.col = col
   win_conf.title = nil
   win_conf.title_pos = nil
-  if win_conf.border then
-    win_conf.border[8] = ''
-    win_conf.border[7] = ''
-  end
 
   if opt.title then
-    win_conf.title = opt.title
+    win_conf.title = #opt.title > win_conf.width
+        and opt.title:sub(#opt.title - win_conf.width - 5, #opt.title)
+      or opt.title
     win_conf.title_pos = 'center'
   end
   return win
